@@ -30,6 +30,7 @@ public abstract class BaseService {
         matchMap.put("totalScoreA", match.getTotalScoreA());
         matchMap.put("totalScoreB", match.getTotalScoreB());
         matchMap.put("scoreDifference", match.getScoreDifference());
+        matchMap.put("winner", match.getWinner());
         matchMap.put("players", mapList(matchPlayers, MatchPlayerDto.class));
         return MapperUtils.convertValue(matchMap, MatchDto.class);
     }

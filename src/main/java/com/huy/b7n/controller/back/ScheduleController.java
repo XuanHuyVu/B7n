@@ -5,13 +5,12 @@ import com.huy.b7n.manager.ScheduleManager;
 import com.huy.b7n.request.CompleteRoundRequest;
 import com.huy.b7n.request.GenerateNextRoundRequest;
 import com.huy.b7n.response.GenerateRoundResponse;
+import com.huy.b7n.response.HistoryResponse;
+import com.huy.b7n.response.RankingResponse;
 import com.huy.b7n.response.ResponseDto;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/schedules")
@@ -28,5 +27,15 @@ public class ScheduleController extends BaseController {
     @PostMapping("/rounds/complete")
     public ResponseEntity<ResponseDto<GenerateRoundResponse>> completeRound(@RequestBody CompleteRoundRequest request) {
         return success(scheduleManager.completeRound(request));
+    }
+
+    @GetMapping("/history")
+    public ResponseEntity<ResponseDto<HistoryResponse>> getHistory(@RequestParam(required = false) String sessionCode) {
+        return success(scheduleManager.getHistory(sessionCode));
+    }
+
+    @GetMapping("/ranking")
+    public ResponseEntity<ResponseDto<RankingResponse>> getRanking(@RequestParam(required = false) String sessionCode) {
+        return success(scheduleManager.getRanking(sessionCode));
     }
 }

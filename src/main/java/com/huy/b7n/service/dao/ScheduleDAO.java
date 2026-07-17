@@ -1,5 +1,6 @@
 package com.huy.b7n.service.dao;
 
+import com.huy.b7n.common.ERoundStatus;
 import com.huy.b7n.entity.MatchEntity;
 import com.huy.b7n.entity.MatchPlayerEntity;
 import com.huy.b7n.entity.RoundEntity;
@@ -9,7 +10,9 @@ import com.huy.b7n.repository.RoundRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 
 @Component
 @RequiredArgsConstructor
@@ -29,6 +32,11 @@ public class ScheduleDAO {
 
     public RoundEntity saveRound(RoundEntity round) {
         return roundRepository.save(round);
+    }
+
+    public RoundEntity findLatestRoundByStatuses(String sessionCode, Collection<ERoundStatus> statuses) {
+        return roundRepository.findTopBySession_SessionCodeAndStatusInOrderByRoundNumberDesc(sessionCode, statuses)
+                .orElse(null);
     }
 
     public RoundEntity getRoundRequired(String sessionCode, Integer roundNumber) {
@@ -55,6 +63,13 @@ public class ScheduleDAO {
         return matchRepository.findAllByRound_Session_SessionCode(sessionCode);
     }
 
+    public List<MatchEntity> findCompletedMatches(String sessionCode) {
+        if (Objects.nonNull(sessionCode) && !sessionCode.isBlank()) {
+            return matchRepository.findAllByRound_Session_SessionCodeAndWinnerIsNotNullOrderByEndedAtDesc(sessionCode);
+        }
+        return matchRepository.findAllByWinnerIsNotNullOrderByEndedAtDesc();
+    }
+
     public MatchPlayerEntity saveMatchPlayer(MatchPlayerEntity entity) {
         return matchPlayerRepository.save(entity);
     }
@@ -72,6 +87,13 @@ public class ScheduleDAO {
         return matchPlayerRepository.findAllByMatch_Round_Session_SessionCode(sessionCode);
     }
 
+    public List<MatchPlayerEntity> findCompletedMatchPlayers(String sessionCode) {
+        if (Objects.nonNull(sessionCode) && !sessionCode.isBlank()) {
+            return matchPlayerRepository.findAllByMatch_Round_Session_SessionCodeAndMatch_WinnerIsNotNull(sessionCode);
+        }
+        return matchPlayerRepository.findAllByMatch_WinnerIsNotNull();
+    }
+
     public MatchPlayerEntity getMatchPlayerRequired(String sessionCode, Integer roundNumber,
                                                     Integer courtNumber, String playerCode) {
         return matchPlayerRepository
@@ -79,5 +101,17 @@ public class ScheduleDAO {
                         sessionCode, roundNumber, courtNumber, playerCode)
                 .orElseThrow(() -> new IllegalArgumentException("Nguoi choi khong thuoc tran. sessionCode = " + sessionCode
                         + ", " + "roundNumber = " + roundNumber + ", courtNumber = " + courtNumber + ", playerCode = " + playerCode));
+    }
+
+    public void deleteMatchPlayersBySession(String sessionCode) {
+        matchPlayerRepository.deleteByMatch_Round_Session_SessionCode(sessionCode);
+    }
+
+    public void deleteMatchesBySession(String sessionCode) {
+        matchRepository.deleteByRound_Session_SessionCode(sessionCode);
+    }
+
+    public void deleteRoundsBySession(String sessionCode) {
+        roundRepository.deleteBySession_SessionCode(sessionCode);
     }
 }

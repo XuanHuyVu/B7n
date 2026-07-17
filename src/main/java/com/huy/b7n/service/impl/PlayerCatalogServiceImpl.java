@@ -9,7 +9,6 @@ import com.huy.b7n.service.dao.PlayerDAO;
 import com.huy.b7n.utils.MapperUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
 
 import java.math.BigDecimal;
@@ -41,7 +40,7 @@ public class PlayerCatalogServiceImpl extends BaseService implements PlayerCatal
     @Override
     public PlayerDto getPlayer(String playerCode) {
         Assert.hasText(playerCode, "Mã người chơi không được rỗng");
-        return MapperUtils.convertValue( playerDAO.getRequired(playerCode), PlayerDto.class);
+        return MapperUtils.convertValue(playerDAO.getRequired(playerCode), PlayerDto.class);
     }
 
     @Override

@@ -26,4 +26,12 @@ public interface MatchRepository extends JpaRepository<MatchEntity, Long> {
 
     @EntityGraph(attributePaths = {"round", "round.session"})
     List<MatchEntity> findAllByRound_Session_SessionCode(String sessionCode);
+
+    @EntityGraph(attributePaths = {"round", "round.session"})
+    List<MatchEntity> findAllByWinnerIsNotNullOrderByEndedAtDesc();
+
+    @EntityGraph(attributePaths = {"round", "round.session"})
+    List<MatchEntity> findAllByRound_Session_SessionCodeAndWinnerIsNotNullOrderByEndedAtDesc(String sessionCode);
+
+    void deleteByRound_Session_SessionCode(String sessionCode);
 }

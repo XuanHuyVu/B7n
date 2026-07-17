@@ -1,13 +1,13 @@
 package com.huy.b7n.service.impl;
 
 import com.huy.b7n.common.*;
-import com.huy.b7n.dto.MatchDto;
-import com.huy.b7n.dto.RoundDto;
-import com.huy.b7n.dto.SessionPlayerDto;
+import com.huy.b7n.dto.*;
 import com.huy.b7n.entity.*;
 import com.huy.b7n.request.CompleteRoundRequest;
 import com.huy.b7n.request.GenerateNextRoundRequest;
 import com.huy.b7n.response.GenerateRoundResponse;
+import com.huy.b7n.response.HistoryResponse;
+import com.huy.b7n.response.RankingResponse;
 import com.huy.b7n.service.BaseService;
 import com.huy.b7n.service.ScheduleService;
 import com.huy.b7n.service.dao.PlaySessionDAO;
@@ -32,6 +32,11 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
     @Override
     public GenerateRoundResponse generateNextRound(GenerateNextRoundRequest request) {
         PlaySessionEntity session = playSessionDao.getSessionRequired(request.getSessionCode());
+        if (!EPlaySessionStatus.IN_PROGRESS.equals(session.getStatus())) {
+            session.setStatus(EPlaySessionStatus.IN_PROGRESS);
+            playSessionDao.saveSession(session);
+        }
+        validateNoUnfinishedRound(request.getSessionCode());
         List<SessionPlayerEntity> queriedPlayers = playSessionDao.findSessionPlayersByStatuses(
                 request.getSessionCode(), List.of(ESessionPlayerStatus.AVAILABLE, ESessionPlayerStatus.RESTING));
         List<SessionPlayerEntity> activePlayers = distinctSessionPlayersByPlayerId(queriedPlayers);
@@ -57,8 +62,7 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
         round.setStatus(ERoundStatus.SCHEDULED);
         round.setCreatedAt(new Date());
         round = scheduleDao.saveRound(round);
-        List<PlayerPair> pairs = createPairs(selectedPlayers, historyIndex);
-        List<MatchEntity> matches = createMatches(round, pairs, matchCount, historyIndex);
+        List<MatchEntity> matches = createMatches(round, selectedPlayers, matchCount, historyIndex);
         updateSessionPlayersAfterSchedule(selectedPlayers, restingPlayers, roundNumber);
         return new GenerateRoundResponse(toRoundDto(round), toMatchDtos(matches), sessionPlayerMapper.toDtos(restingPlayers));
     }
@@ -67,8 +71,16 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
     public GenerateRoundResponse completeRound(CompleteRoundRequest request) {
         RoundEntity round = scheduleDao.getRoundRequired(request.getSessionCode(), request.getRoundNumber());
         List<MatchEntity> matches = scheduleDao.findMatchesByRound(request.getSessionCode(), request.getRoundNumber());
+        Map<Integer, ETeamCode> winnersByCourt = Optional.ofNullable(request.getResults()).orElse(List.of()).stream()
+                .filter(result -> Objects.nonNull(result.getCourtNumber()) && Objects.nonNull(result.getWinner()))
+                .collect(Collectors.toMap(
+                        CompleteRoundRequest.MatchResultRequest::getCourtNumber,
+                        CompleteRoundRequest.MatchResultRequest::getWinner,
+                        (first, second) -> second
+                ));
         Date now = new Date();
-        matches.forEach(match -> completeMatch(request.getSessionCode(), request.getRoundNumber(), match, now));
+        matches.forEach(match -> completeMatch(request.getSessionCode(), request.getRoundNumber(), match,
+                winnersByCourt.get(match.getCourtNumber()), now));
         round.setStatus(ERoundStatus.COMPLETED);
         round.setEndedAt(now);
         round = scheduleDao.saveRound(round);
@@ -79,15 +91,71 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
         return MapperUtils.convertValue(responseMap, GenerateRoundResponse.class);
     }
 
-    private void completeMatch(String sessionCode, Integer roundNumber, MatchEntity match, Date now) {
+    @Override
+    public HistoryResponse getHistory(String sessionCode) {
+        List<MatchHistoryDto> history = scheduleDao.findCompletedMatches(sessionCode).stream()
+                .map(this::toHistoryDto)
+                .toList();
+        return new HistoryResponse(history);
+    }
+
+    @Override
+    public RankingResponse getRanking(String sessionCode) {
+        Map<String, RankingAccumulator> rows = new LinkedHashMap<>();
+        for (MatchPlayerEntity matchPlayer : scheduleDao.findCompletedMatchPlayers(sessionCode)) {
+            String playerCode = matchPlayer.getPlayer().getPlayerCode();
+            RankingAccumulator row = rows.computeIfAbsent(playerCode,
+                    ignored -> new RankingAccumulator(matchPlayer.getPlayer()));
+            row.matches += 1;
+            if (matchPlayer.getTeamCode().equals(matchPlayer.getMatch().getWinner())) {
+                row.wins += 1;
+            }
+        }
+        List<RankingRowDto> ranking = rows.values().stream()
+                .map(RankingAccumulator::toDto)
+                .sorted(Comparator.comparing(RankingRowDto::getWinRate).reversed()
+                        .thenComparing(Comparator.comparing(RankingRowDto::getWins).reversed())
+                        .thenComparing(row -> row.getPlayer().getName(), Comparator.nullsLast(String::compareToIgnoreCase)))
+                .toList();
+        return new RankingResponse(ranking);
+    }
+
+    private MatchHistoryDto toHistoryDto(MatchEntity match) {
+        String sessionCode = match.getRound().getSession().getSessionCode();
+        Integer roundNumber = match.getRound().getRoundNumber();
+        Integer courtNumber = match.getCourtNumber();
+        List<MatchPlayerEntity> players = scheduleDao.findMatchPlayers(sessionCode, roundNumber, courtNumber);
+        MatchHistoryDto dto = new MatchHistoryDto();
+        dto.setId(sessionCode + "-" + roundNumber + "-" + courtNumber);
+        dto.setSessionCode(sessionCode);
+        dto.setRoundNumber(roundNumber);
+        dto.setCourtNumber(courtNumber);
+        dto.setWinner(match.getWinner());
+        dto.setPlayedAt(match.getEndedAt());
+        dto.setTeamA(toPlayersByTeam(players, ETeamCode.A));
+        dto.setTeamB(toPlayersByTeam(players, ETeamCode.B));
+        return dto;
+    }
+
+    private List<PlayerDto> toPlayersByTeam(List<MatchPlayerEntity> players, ETeamCode teamCode) {
+        return players.stream()
+                .filter(player -> teamCode.equals(player.getTeamCode()))
+                .map(player -> MapperUtils.convertValue(player.getPlayer(), PlayerDto.class))
+                .toList();
+    }
+
+    private void completeMatch(String sessionCode, Integer roundNumber, MatchEntity match, ETeamCode winner, Date now) {
+        if (Objects.isNull(winner)) {
+            throw new IllegalArgumentException("Chưa chọn đội thắng cho sân " + match.getCourtNumber());
+        }
         match.setStatus(EMatchStatus.COMPLETED);
+        match.setWinner(winner);
         match.setEndedAt(now);
         scheduleDao.saveMatch(match);
         scheduleDao.findMatchPlayers(sessionCode, roundNumber, match.getCourtNumber()).stream()
                 .filter(matchPlayer -> !Boolean.FALSE.equals(matchPlayer.getCompleted()))
                 .forEach(matchPlayer -> tryReturnPlayerToAvailable(sessionCode, matchPlayer));
     }
-
     private void tryReturnPlayerToAvailable(String sessionCode, MatchPlayerEntity matchPlayer) {
         String playerCode = matchPlayer.getPlayer().getPlayerCode();
         SessionPlayerEntity sessionPlayer = playSessionDao.getSessionPlayerRequired(sessionCode, playerCode);
@@ -104,6 +172,23 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
                 && !ESessionPlayerStatus.UNAVAILABLE.equals(sessionPlayer.getCurrentStatus());
     }
 
+    private void validateNoUnfinishedRound(String sessionCode) {
+        RoundEntity unfinishedRound = scheduleDao.findLatestRoundByStatuses(
+                sessionCode,
+                List.of(ERoundStatus.SCHEDULED, ERoundStatus.IN_PROGRESS)
+        );
+        if (Objects.isNull(unfinishedRound)) {
+            return;
+        }
+        boolean hasUnfinishedMatch = scheduleDao
+                .findMatchesByRound(sessionCode, unfinishedRound.getRoundNumber())
+                .stream()
+                .anyMatch(match -> Objects.isNull(match.getWinner()));
+        if (hasUnfinishedMatch) {
+            throw new IllegalStateException("Vui lòng chọn đội thắng cho tất cả trận đang diễn ra trước khi tạo trận mới.");
+        }
+    }
+
     private int calculatePriority(SessionPlayerEntity player, Integer roundNumber) {
         int restCount = valueOrZero(player.getRestCount());
         int matchCount = valueOrZero(player.getMatchCount());
@@ -117,46 +202,14 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
         return score;
     }
 
-    private List<PlayerPair> createPairs(List<SessionPlayerEntity> selectedPlayers, HistoryIndex historyIndex) {
-        List<SessionPlayerEntity> pool = new ArrayList<>(selectedPlayers);
-        List<PlayerPair> pairs = new ArrayList<>();
-        pool.sort(Comparator.comparingInt(player -> valueOrZero(player.getMatchCount())));
-        while (pool.size() >= 2) {
-            SessionPlayerEntity first = pool.removeFirst();
-            int bestPartnerIndex = java.util.stream.IntStream
-                    .range(0, pool.size())
-                    .filter(index -> !Objects.equals(first.getPlayer().getId(), pool.get(index).getPlayer().getId()))
-                    .boxed()
-                    .min(Comparator.comparing(index -> calculatePartnerPenalty(first, pool.get(index), historyIndex)))
-                    .orElseThrow(() -> new IllegalStateException("Không tìm được đồng đội hợp lệ cho " + first.getPlayer().getPlayerCode()));
-            SessionPlayerEntity bestPartner = pool.remove(bestPartnerIndex);
-            pairs.add(new PlayerPair(first, bestPartner));
-        }
-        return pairs;
-    }
-
-    private BigDecimal calculatePartnerPenalty(SessionPlayerEntity a, SessionPlayerEntity b, HistoryIndex historyIndex) {
-        BigDecimal levelGap = resolveLevelScore(a.getPlayer()).subtract(resolveLevelScore(b.getPlayer())).abs();
-        int repeatCount = historyIndex.getPartnerCount(a.getPlayer().getPlayerCode(), b.getPlayer().getPlayerCode());
-        BigDecimal levelPenalty = levelGap.multiply(BigDecimal.valueOf(Constant.ScheduleAlgorithmConfig.PARTNER_LEVEL_GAP_WEIGHT));
-        BigDecimal repeatPenalty = BigDecimal.valueOf((long) repeatCount * Constant.ScheduleAlgorithmConfig.PARTNER_REPEAT_WEIGHT);
-        return levelPenalty.add(repeatPenalty);
-    }
-
-    private List<MatchEntity> createMatches(RoundEntity round, List<PlayerPair> pairs, int matchCount, HistoryIndex historyIndex) {
-        List<PlayerPair> pool = new ArrayList<>(pairs);
+    private List<MatchEntity> createMatches(RoundEntity round, List<SessionPlayerEntity> selectedPlayers, int matchCount,
+                                            HistoryIndex historyIndex) {
+        SchedulePlan plan = createBestSchedulePlan(selectedPlayers, matchCount, round.getRoundNumber(), historyIndex);
         List<MatchEntity> matches = new ArrayList<>();
-        for (int court = 1; court <= matchCount; court++) {
-            if (pool.size() < 2)
-                throw new IllegalStateException("Không đủ cặp người chơi để tạo trận cho sân " + court);
-            PlayerPair pairA = pool.removeFirst();
-            int finalCourt = court;
-            PlayerPair pairB = pool.stream()
-                    .filter(candidate -> !hasCommonPlayer(pairA, candidate))
-                    .min(Comparator.comparing(
-                            candidate -> calculateMatchPenalty(pairA, candidate, historyIndex)))
-                    .orElseThrow(() -> new IllegalStateException("Không tìm được đội B gồm 2 người khác với đội A " + "cho sân " + finalCourt));
-            pool.remove(pairB);
+        for (int court = 1; court <= plan.matches().size(); court++) {
+            MatchPlan matchPlan = plan.matches().get(court - 1);
+            PlayerPair pairA = matchPlan.pairA();
+            PlayerPair pairB = matchPlan.pairB();
             validateMatchPlayers(pairA, pairB);
             MatchEntity match = createMatch(round, court, pairA, pairB);
             List<MatchPlayerEntity> matchPlayers = createMatchPlayers(match, pairA, pairB);
@@ -166,6 +219,56 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
         return matches;
     }
 
+    private SchedulePlan createBestSchedulePlan(List<SessionPlayerEntity> selectedPlayers, int matchCount,
+                                                Integer roundNumber, HistoryIndex historyIndex) {
+        int attempts = Math.max(80, selectedPlayers.size() * selectedPlayers.size());
+        return java.util.stream.IntStream.range(0, attempts)
+                .mapToObj(ignored -> createRandomSchedulePlan(selectedPlayers, matchCount, roundNumber, historyIndex))
+                .min(Comparator.comparing(SchedulePlan::penalty))
+                .orElseThrow(() -> new IllegalStateException("Không tạo được phương án xếp trận hợp lệ"));
+    }
+
+    private SchedulePlan createRandomSchedulePlan(List<SessionPlayerEntity> selectedPlayers, int matchCount,
+                                                  Integer roundNumber, HistoryIndex historyIndex) {
+        List<SessionPlayerEntity> pool = new ArrayList<>(selectedPlayers);
+        Collections.shuffle(pool);
+        List<MatchPlan> matchPlans = new ArrayList<>();
+        SchedulePenalty totalPenalty = SchedulePenalty.zero();
+        int playersPerMatch = Constant.ScheduleAlgorithmConfig.PLAYERS_PER_DOUBLES_MATCH;
+        for (int matchIndex = 0; matchIndex < matchCount; matchIndex++) {
+            int fromIndex = matchIndex * playersPerMatch;
+            int toIndex = fromIndex + playersPerMatch;
+            if (toIndex > pool.size())
+                throw new IllegalStateException("Không đủ người chơi để tạo trận");
+            MatchPlan matchPlan = createBestMatchPlan(pool.subList(fromIndex, toIndex), roundNumber, historyIndex);
+            matchPlans.add(matchPlan);
+            totalPenalty = totalPenalty.add(matchPlan.penalty());
+        }
+        return new SchedulePlan(matchPlans, totalPenalty);
+    }
+
+    private MatchPlan createBestMatchPlan(List<SessionPlayerEntity> players, Integer roundNumber, HistoryIndex historyIndex) {
+        if (players.size() != Constant.ScheduleAlgorithmConfig.PLAYERS_PER_DOUBLES_MATCH)
+            throw new IllegalStateException("Một trận đánh đôi phải có đúng 4 người chơi");
+        List<MatchPlan> candidates = new ArrayList<>(List.of(
+                createMatchPlan(players.get(0), players.get(1), players.get(2), players.get(3), roundNumber, historyIndex),
+                createMatchPlan(players.get(0), players.get(2), players.get(1), players.get(3), roundNumber, historyIndex),
+                createMatchPlan(players.get(0), players.get(3), players.get(1), players.get(2), roundNumber, historyIndex)
+        ));
+        Collections.shuffle(candidates);
+        return candidates.stream()
+                .min(Comparator.comparing(MatchPlan::penalty))
+                .orElseThrow(() -> new IllegalStateException("Không tạo được cách chia đội hợp lệ"));
+    }
+
+    private MatchPlan createMatchPlan(SessionPlayerEntity a1, SessionPlayerEntity a2,
+                                      SessionPlayerEntity b1, SessionPlayerEntity b2,
+                                      Integer roundNumber, HistoryIndex historyIndex) {
+        PlayerPair pairA = new PlayerPair(a1, a2);
+        PlayerPair pairB = new PlayerPair(b1, b2);
+        validateMatchPlayers(pairA, pairB);
+        return new MatchPlan(pairA, pairB, calculateMatchPenalty(pairA, pairB, roundNumber, historyIndex));
+    }
     private void validateMatchPlayers(PlayerPair pairA, PlayerPair pairB) {
         List<SessionPlayerEntity> players = List.of(pairA.first(), pairA.second(), pairB.first(), pairB.second());
         Set<Long> uniquePlayerIds = players.stream()
@@ -190,16 +293,45 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
         return scheduleDao.saveMatch(match);
     }
 
-    private BigDecimal calculateMatchPenalty(PlayerPair pairA, PlayerPair pairB, HistoryIndex historyIndex) {
+    private SchedulePenalty calculateMatchPenalty(PlayerPair pairA, PlayerPair pairB, Integer roundNumber, HistoryIndex historyIndex) {
         BigDecimal levelDifference = pairA.totalScore()
                 .subtract(pairB.totalScore())
                 .abs();
-        int opponentRepeat = countOpponentRepeat(pairA, pairB, historyIndex);
-        BigDecimal levelPenalty = levelDifference.multiply(BigDecimal.valueOf(Constant.ScheduleAlgorithmConfig.LEVEL_BALANCE_WEIGHT));
-        BigDecimal opponentPenalty = BigDecimal.valueOf((long) opponentRepeat * Constant.ScheduleAlgorithmConfig.OPPONENT_REPEAT_WEIGHT);
-        return levelPenalty.add(opponentPenalty);
+        return new SchedulePenalty(
+                levelDifference,
+                teamMatchCountDifference(pairA, pairB),
+                teamRestDurationDifference(pairA, pairB, roundNumber),
+                countPartnerRepeat(pairA, pairB, historyIndex),
+                countOpponentRepeat(pairA, pairB, historyIndex)
+        );
     }
 
+    private int teamMatchCountDifference(PlayerPair pairA, PlayerPair pairB) {
+        return Math.abs(totalMatchCount(pairA) - totalMatchCount(pairB));
+    }
+
+    private int totalMatchCount(PlayerPair pair) {
+        return valueOrZero(pair.first().getMatchCount()) + valueOrZero(pair.second().getMatchCount());
+    }
+
+    private int teamRestDurationDifference(PlayerPair pairA, PlayerPair pairB, Integer roundNumber) {
+        return Math.abs(totalRestDuration(pairA, roundNumber) - totalRestDuration(pairB, roundNumber));
+    }
+
+    private int totalRestDuration(PlayerPair pair, Integer roundNumber) {
+        return restDuration(pair.first(), roundNumber) + restDuration(pair.second(), roundNumber);
+    }
+
+    private int restDuration(SessionPlayerEntity player, Integer roundNumber) {
+        if (Objects.isNull(player.getLastPlayedRound())) {
+            return roundNumber;
+        }
+        return Math.max(0, roundNumber - player.getLastPlayedRound());
+    }
+    private int countPartnerRepeat(PlayerPair pairA, PlayerPair pairB, HistoryIndex historyIndex) {
+        return historyIndex.getPartnerCount(pairA.first().getPlayer().getPlayerCode(), pairA.second().getPlayer().getPlayerCode())
+                + historyIndex.getPartnerCount(pairB.first().getPlayer().getPlayerCode(), pairB.second().getPlayer().getPlayerCode());
+    }
     private int countOpponentRepeat(PlayerPair pairA, PlayerPair pairB, HistoryIndex historyIndex) {
         List<SessionPlayerEntity> teamA = List.of(pairA.first(), pairA.second());
         List<SessionPlayerEntity> teamB = List.of(pairB.first(), pairB.second());
@@ -321,12 +453,71 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
         return buildMatchDto(match, sessionCode, roundNumber, courtNumber, matchPlayers);
     }
 
+    private record SchedulePenalty(
+            BigDecimal levelDifference,
+            int matchCountDifference,
+            int restDurationDifference,
+            int partnerRepeat,
+            int opponentRepeat
+    ) implements Comparable<SchedulePenalty> {
+        static SchedulePenalty zero() {
+            return new SchedulePenalty(BigDecimal.ZERO, 0, 0, 0, 0);
+        }
+
+        SchedulePenalty add(SchedulePenalty other) {
+            return new SchedulePenalty(
+                    levelDifference.add(other.levelDifference),
+                    matchCountDifference + other.matchCountDifference,
+                    restDurationDifference + other.restDurationDifference,
+                    partnerRepeat + other.partnerRepeat,
+                    opponentRepeat + other.opponentRepeat
+            );
+        }
+
+        @Override
+        public int compareTo(SchedulePenalty other) {
+            int levelCompare = levelDifference.compareTo(other.levelDifference);
+            if (levelCompare != 0) return levelCompare;
+            int matchCountCompare = Integer.compare(matchCountDifference, other.matchCountDifference);
+            if (matchCountCompare != 0) return matchCountCompare;
+            int restCompare = Integer.compare(restDurationDifference, other.restDurationDifference);
+            if (restCompare != 0) return restCompare;
+            int partnerCompare = Integer.compare(partnerRepeat, other.partnerRepeat);
+            if (partnerCompare != 0) return partnerCompare;
+            return Integer.compare(opponentRepeat, other.opponentRepeat);
+        }
+    }
+    private record SchedulePlan(List<MatchPlan> matches, SchedulePenalty penalty) {
+    }
+
+    private record MatchPlan(PlayerPair pairA, PlayerPair pairB, SchedulePenalty penalty) {
+    }
+
     private record PlayerPair(SessionPlayerEntity first, SessionPlayerEntity second) {
         BigDecimal totalScore() {
             return resolveLevelScore(first.getPlayer()).add(resolveLevelScore(second.getPlayer()));
         }
     }
 
+
+    private static class RankingAccumulator {
+        private final PlayerEntity player;
+        private int matches;
+        private int wins;
+
+        private RankingAccumulator(PlayerEntity player) {
+            this.player = player;
+        }
+
+        private RankingRowDto toDto() {
+            RankingRowDto dto = new RankingRowDto();
+            dto.setPlayer(MapperUtils.convertValue(player, PlayerDto.class));
+            dto.setMatches(matches);
+            dto.setWins(wins);
+            dto.setWinRate(matches == 0 ? 0 : Math.round((wins * 100f) / matches));
+            return dto;
+        }
+    }
     private static class HistoryIndex {
         private final Map<String, Integer> partnerHistory = new HashMap<>();
         private final Map<String, Integer> opponentHistory = new HashMap<>();
@@ -373,15 +564,14 @@ public class ScheduleServiceImpl extends BaseService implements ScheduleService 
     }
 
     private List<SessionPlayerEntity> selectPlayers(List<SessionPlayerEntity> players, int playerNeeded, Integer roundNumber) {
-        return players.stream()
-                .sorted(Comparator.comparingInt((SessionPlayerEntity player) -> calculatePriority(player, roundNumber)).reversed())
+        List<SessionPlayerEntity> shuffledPlayers = new ArrayList<>(players);
+        Collections.shuffle(shuffledPlayers);
+        return shuffledPlayers.stream()
+                .sorted(Comparator.comparingInt((SessionPlayerEntity player) -> valueOrZero(player.getMatchCount()))
+                        .thenComparing(Comparator.comparingInt((SessionPlayerEntity player) -> restDuration(player, roundNumber)).reversed())
+                        .thenComparingInt(player -> valueOrZero(player.getConsecutiveMatchCount())))
                 .limit(playerNeeded)
                 .toList();
-    }
-
-    private boolean hasCommonPlayer(PlayerPair pairA, PlayerPair pairB) {
-        Set<Long> pairAPlayerIds = Set.of(getPlayerId(pairA.first()), getPlayerId(pairA.second()));
-        return pairAPlayerIds.contains(getPlayerId(pairB.first())) || pairAPlayerIds.contains(getPlayerId(pairB.second()));
     }
 
     private Long getPlayerId(SessionPlayerEntity sessionPlayer) {

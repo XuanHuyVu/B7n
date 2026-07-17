@@ -35,4 +35,6 @@ public interface SessionPlayerRepository extends JpaRepository<SessionPlayerEnti
             String sessionCode,
             String playerCode
     );
+
+    void deleteBySession_SessionCode(String sessionCode);
 }

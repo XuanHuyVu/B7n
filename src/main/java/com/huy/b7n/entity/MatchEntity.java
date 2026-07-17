@@ -1,10 +1,11 @@
 package com.huy.b7n.entity;
 
-
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.huy.b7n.common.EMatchStatus;
+import com.huy.b7n.common.ETeamCode;
 import com.huy.b7n.common.TableNameConstant;
 import com.huy.b7n.converter.EMatchStatusConverter;
+import com.huy.b7n.converter.ETeamCodeConverter;
 import com.huy.b7n.utils.DateUtils;
 import jakarta.persistence.*;
 import lombok.*;
@@ -50,6 +51,10 @@ public class MatchEntity {
 
     @Column(name = "SCORE_DIFFERENCE", precision = 6, scale = 2)
     private BigDecimal scoreDifference;
+
+    @Column(name = "WINNER")
+    @Convert(converter = ETeamCodeConverter.class)
+    private ETeamCode winner;
 
     @Column(name = "STARTED_AT")
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = DateUtils.NORMAL_TIME_PATTERN, timezone = DateUtils.DEFAULT_TIMEZONE_GMT7)

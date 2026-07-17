@@ -37,10 +37,28 @@ public interface MatchPlayerRepository extends JpaRepository<MatchPlayerEntity, 
             "match.round.session",
             "player"
     })
+    List<MatchPlayerEntity> findAllByMatch_WinnerIsNotNull();
+
+    @EntityGraph(attributePaths = {
+            "match",
+            "match.round",
+            "match.round.session",
+            "player"
+    })
+    List<MatchPlayerEntity> findAllByMatch_Round_Session_SessionCodeAndMatch_WinnerIsNotNull(String sessionCode);
+
+    @EntityGraph(attributePaths = {
+            "match",
+            "match.round",
+            "match.round.session",
+            "player"
+    })
     Optional<MatchPlayerEntity> findByMatch_Round_Session_SessionCodeAndMatch_Round_RoundNumberAndMatch_CourtNumberAndPlayer_PlayerCode(
             String sessionCode,
             Integer roundNumber,
             Integer courtNumber,
             String playerCode
     );
+
+    void deleteByMatch_Round_Session_SessionCode(String sessionCode);
 }

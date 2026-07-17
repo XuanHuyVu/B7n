@@ -3,6 +3,8 @@ package com.huy.b7n.manager;
 import com.huy.b7n.request.CompleteRoundRequest;
 import com.huy.b7n.request.GenerateNextRoundRequest;
 import com.huy.b7n.response.GenerateRoundResponse;
+import com.huy.b7n.response.HistoryResponse;
+import com.huy.b7n.response.RankingResponse;
 import com.huy.b7n.service.ScheduleService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -19,5 +21,13 @@ public class ScheduleManager {
 
     public GenerateRoundResponse completeRound(CompleteRoundRequest request) {
         return scheduleService.completeRound(request);
+    }
+
+    public HistoryResponse getHistory(String sessionCode) {
+        return scheduleService.getHistory(sessionCode);
+    }
+
+    public RankingResponse getRanking(String sessionCode) {
+        return scheduleService.getRanking(sessionCode);
     }
 }

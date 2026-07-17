@@ -8,7 +8,6 @@ import com.huy.b7n.repository.SessionPlayerRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
-import java.util.Collection;
 import java.util.List;
 
 @Component
@@ -26,6 +25,10 @@ public class PlaySessionDAO {
     public PlaySessionEntity getSessionRequired(String sessionCode) {
         return playSessionRepository.findBySessionCode(sessionCode)
                 .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy ca chơi: " + sessionCode));
+    }
+
+    public List<PlaySessionEntity> findSessions() {
+        return playSessionRepository.findAllByOrderByCreatedAtDesc();
     }
 
     public boolean existsBySessionCode(String sessionCode) {
@@ -56,5 +59,13 @@ public class PlaySessionDAO {
 
     public long countSessionCodeStartingWith(String prefix) {
         return playSessionRepository.countBySessionCodeStartingWith(prefix);
+    }
+
+    public void deleteSessionPlayers(String sessionCode) {
+        sessionPlayerRepository.deleteBySession_SessionCode(sessionCode);
+    }
+
+    public void deleteSession(String sessionCode) {
+        playSessionRepository.deleteBySessionCode(sessionCode);
     }
 }
