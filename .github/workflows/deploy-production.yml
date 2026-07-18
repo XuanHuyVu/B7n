@@ -1,4 +1,4 @@
-name: Deploy Backend Production
+name: Deploy Frontend Production
 
 on:
   push:
@@ -7,13 +7,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: b7n-be-production
+  group: b7n-fe-production
   cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: b7n-be
-  FRONTEND_IMAGE_NAME: b7n-fe
+  IMAGE_NAME: b7n-fe
+  BACKEND_IMAGE_NAME: b7n-be
 
 jobs:
   build-and-push:
@@ -23,8 +23,8 @@ jobs:
       contents: read
       packages: write
     outputs:
-      backend_image: ${{ steps.image.outputs.backend_image }}
-      fallback_frontend_image: ${{ steps.image.outputs.fallback_frontend_image }}
+      frontend_image: ${{ steps.image.outputs.frontend_image }}
+      fallback_backend_image: ${{ steps.image.outputs.fallback_backend_image }}
       image_namespace: ${{ steps.image.outputs.image_namespace }}
 
     steps:
@@ -37,11 +37,12 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE_NAMESPACE="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          BACKEND_IMAGE="${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_NAME}:${GITHUB_SHA}"
-          FALLBACK_FRONTEND_IMAGE="${REGISTRY}/${IMAGE_NAMESPACE}/${FRONTEND_IMAGE_NAME}:latest"
+          FRONTEND_IMAGE="${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_NAME}:${GITHUB_SHA}"
+          FALLBACK_BACKEND_IMAGE="${REGISTRY}/${IMAGE_NAMESPACE}/${BACKEND_IMAGE_NAME}:latest"
+
           echo "image_namespace=${IMAGE_NAMESPACE}" >> "${GITHUB_OUTPUT}"
-          echo "backend_image=${BACKEND_IMAGE}" >> "${GITHUB_OUTPUT}"
-          echo "fallback_frontend_image=${FALLBACK_FRONTEND_IMAGE}" >> "${GITHUB_OUTPUT}"
+          echo "frontend_image=${FRONTEND_IMAGE}" >> "${GITHUB_OUTPUT}"
+          echo "fallback_backend_image=${FALLBACK_BACKEND_IMAGE}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -53,17 +54,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push backend
+      - name: Build and push frontend
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ steps.image.outputs.backend_image }}
+            ${{ steps.image.outputs.frontend_image }}
             ${{ env.REGISTRY }}/${{ steps.image.outputs.image_namespace }}/${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,mode=max,scope=backend
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
 
   deploy:
     name: Deploy
@@ -72,12 +73,6 @@ jobs:
     environment: production
 
     steps:
-      - name: Debug Secrets
-        run: |
-          echo "DO_HOST exists: ${{ secrets.DO_HOST != '' }}"
-          echo "DO_USER exists: ${{ secrets.DO_USER != '' }}"
-          echo "DO_SSH_KEY exists: ${{ secrets.DO_SSH_KEY != '' }}"
-          echo "DO_SSH_PORT exists: ${{ secrets.DO_SSH_PORT != '' }}"
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -88,13 +83,13 @@ jobs:
           script: |
             set -euo pipefail
             cd /opt/b7n-deploy
-            echo "Updating backend source..."
-            git -C B7N-BE fetch origin
-            git -C B7N-BE checkout main
-            git -C B7N-BE pull origin main
-            echo "Building backend..."
-            docker compose build backend
-            echo "Restarting backend..."
-            docker compose up -d backend
+            echo "Updating frontend source..."
+            git -C B7N_FE fetch origin
+            git -C B7N_FE checkout main
+            git -C B7N_FE pull origin main
+            echo "Building frontend..."
+            docker compose build frontend
+            echo "Restarting frontend..."
+            docker compose up -d frontend
             docker compose ps
             docker image prune -f
